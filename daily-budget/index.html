@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Daily Budget</title>
+  <style>
+    html {
+      font-size: 62%;
+    }
+
+    body {
+      font-family: Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      background-color: #fdfdfd;
+      min-height: 100vh;
+      display: flex;
+
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+
+    #root {
+      position: relative;
+      background-color: #fff; /* White background */
+      border-radius: 10px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1); /* Subtle shadow */
+      text-align: center;
+
+      display: flex;
+      flex-direction: column;
+      
+      width: 100%;
+      min-width: 318px;
+      @media (min-width: 650px) {
+        max-width: 650px;
+      }
+    }
+
+    #budget-container {}
+      #budget-container #budget-value {
+        font-size: 7rem;
+        margin: 20px 0px;
+      }
+      #budget-container p {
+        color: #919191;
+        font-size: 1rem;
+      }
+
+    hr {
+      background-color: #fff;
+      border-color: #fff;
+      border-top-width: 1px;
+    }
+
+    .container {
+      display: block;
+      position: relative;
+    }
+
+    .input-container {
+      padding: 20px 0;
+    }
+      .input-container .label {
+        font-size: 1.5rem;
+        margin-bottom: 10px;
+        color: #919191;
+      }
+
+    .input-number {
+      font-size: 3rem;
+      text-align: center;
+      border: 0px;
+      border-radius: 0px;
+      border-bottom: 1px solid black;
+    }
+      .input-number:focus{
+        outline-width: 0px;
+      }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="budget-container" class="container">
+      <p>Budget diário</p>
+      <h1 id="budget-value"></h1>
+    </div>
+
+    <div class="container input-container">
+      <p class="label">quanto vc pode gastar</p>
+      <input type="number" name="max-budget" id="max-budget" class="input-number" />
+    </div>
+    
+    <div class="container">
+      <hr>
+    </div>
+    
+    <div class="container input-container">
+      <p class="label">quanto vc já gastou</p>
+      <input type="number" name="current-balance" id="current-balance" class="input-number" />
+    </div>
+  </div>
+
+  <script>
+    /* *****************************************************
+     * 
+     * Boot
+     * 
+     * *****************************************************/
+
+    const STORAGE_KEYS = {
+      MAX_BUDGET: 'MAX_BUDGET',
+      CURRENT_BALANCE: 'CURRENT_BALANCE',
+    }
+
+    // Checks if we have something in the storage
+    const stored_max_budget = read(STORAGE_KEYS.MAX_BUDGET)
+    let loaded_max_budget = to_fixed(8000) // default
+    if (stored_max_budget instanceof Error) throw stored_max_budget
+    if (!is_nil(stored_max_budget)) {
+      loaded_max_budget = to_fixed(parseFloat(stored_max_budget))
+    }
+
+    const stored_current_balance = read(STORAGE_KEYS.CURRENT_BALANCE)
+    let loaded_current_balance = to_fixed(3062.14) // default
+    if (stored_current_balance instanceof Error) throw stored_current_balance
+    if (!is_nil(stored_current_balance)) {
+      loaded_current_balance = to_fixed(parseFloat(stored_current_balance))
+    }
+
+    const state = create_state({ initial_current_balance: loaded_current_balance, initial_max_budget: loaded_max_budget })
+
+    state.subscribe(state.EVENTS.CURRENT_BALANCE_UPDATED, (event) => {
+      if (typeof event.value !== 'number') {
+        console.error(`expected the current balance value to be a number, got: ${typeof event.value}`)
+        return
+      }
+      save(STORAGE_KEYS.CURRENT_BALANCE, state.get_current_balance().toFixed(2))
+    })
+    state.subscribe(state.EVENTS.MAX_BUDGET_UPDATED, (event) => {
+      if (typeof event.value !== 'number') {
+        console.error(`expected the max budget value to be a number, got: ${typeof event.value}`)
+        return
+      }
+      save(STORAGE_KEYS.MAX_BUDGET, state.get_max_budget().toFixed(2))
+    })
+
+    /** End of boot */
+
+
+
+    const display_budget_value = document.getElementById('budget-value')
+    display_budget_value.innerText = `R$ ${state.get_budget_per_day_label()}`
+
+    const max_budget_input = document.getElementById('max-budget')
+    max_budget_input.value = state.get_max_budget()
+
+    const current_balance_input = document.getElementById('current-balance')
+    current_balance_input.value = state.get_current_balance()
+
+    max_budget_input.addEventListener('keyup', (event) => {
+      let val = parseFloat(max_budget_input.value)
+      if (isNaN(val)) val = 0
+      state.set_max_budget(val)
+    })
+
+    current_balance_input.addEventListener('keyup', (event) => {
+      let val = parseFloat(current_balance_input.value)
+      if (isNaN(val)) val = 0
+      state.set_current_balance(val)
+    })
+
+    const update_daily_budget = () => {
+      display_budget_value.innerText = `R$ ${state.get_budget_per_day_label()}`
+    }
+    state.subscribe(state.EVENTS.MAX_BUDGET_UPDATED, update_daily_budget)
+    state.subscribe(state.EVENTS.CURRENT_BALANCE_UPDATED, update_daily_budget)
+
+    /* *****************************************************
+     * 
+     * Helper functions
+     * 
+     * *****************************************************/
+
+    /**
+     * Creates a page state
+     * 
+     * @param {object} params
+     * @param {number} params.initial_max_budget
+     * @param {number} params.initial_current_balance
+     */
+    function create_state(params = {}) {
+      const DAY_IN_MS = 24 * 60 * 60 * 1000
+      const LAST_DAY = new Date('2024-12-31T20:59:59.9999Z')
+
+      let max_budget = params.initial_max_budget ?? 0
+      let current_balance = params.initial_current_balance ?? 0;
+
+      let budget_per_ms = get_budget_per_ms({ current_balance, max_budget, last_day: LAST_DAY })
+
+      const EVENTS = {
+        MAX_BUDGET_UPDATED: 'MAX_BUDGET_UPDATED',
+        CURRENT_BALANCE_UPDATED: 'CURRENT_BALANCE_UPDATED',
+      }
+
+      /**
+       * Getters & Setters
+       */
+
+      function set_max_budget (new_value = 0) {
+        max_budget = to_fixed(new_value)
+        budget_per_ms = get_budget_per_ms({ current_balance, max_budget, last_day: LAST_DAY })
+        trigger(EVENTS.MAX_BUDGET_UPDATED, new_value)
+      }
+      function get_max_budget () {
+        return to_fixed(max_budget)
+      }
+      function get_max_budget_label() {
+        return get_max_budget().toFixed(2)
+      }
+
+
+      function set_current_balance (new_value = 0) {
+        current_balance = to_fixed(new_value)
+        budget_per_ms = get_budget_per_ms({ current_balance, max_budget, last_day: LAST_DAY })
+        trigger(EVENTS.CURRENT_BALANCE_UPDATED, new_value)
+      }
+      function get_current_balance () {
+        return to_fixed(current_balance)
+      }
+      function get_current_balance_label() {
+        return get_current_balance().toFixed(2)
+      }
+
+      
+      function get_budget_per_day() {
+        return to_fixed(budget_per_ms * DAY_IN_MS)
+      }
+      function get_budget_per_day_label() {
+        return get_budget_per_day().toFixed(2)
+      }
+
+      /**
+       * Subscription mechanism
+       */
+      
+      const subscriptions = new Map()
+      /**
+       * Subscribes to an event
+       * @param {EVENTS} event
+       * @param {function} callback
+       * @returns The unsubscribe function
+       */
+      function subscribe(event, callback) {
+        let event_subs = subscriptions.get(event)
+
+        // Creates a set for this event, if that doesn't exists
+        if (is_nil(event_subs)) event_subs = new Set()
+
+        // Add the new cb to the subs of that event
+        event_subs.add(callback)
+        subscriptions.set(event, event_subs)
+
+        // Returns the unsub function for this event
+        return () => {
+          event_subs.delete(callback)
+        }
+      }
+      function trigger(event_name, value) {
+        const event_subs = subscriptions.get(event_name)
+        
+        if (is_nil(event_subs)) return
+        
+        const event = {
+          name: event_name,
+          value,
+        }
+        event_subs.forEach((callback) => {
+          callback(event)
+        })
+      }
+      
+      return {
+        set_max_budget,
+        get_max_budget,
+        get_max_budget_label,
+        set_current_balance,
+        get_current_balance,
+        get_current_balance_label,
+        get_budget_per_day,
+        get_budget_per_day_label,
+        EVENTS,
+        subscribe
+      }
+    }
+
+    /**
+     * @param {object}  params
+     * @param {number}  params.current_balance
+     * @param {number}  params.max_budget
+     * @param {Date}    params.last_day
+     * @param {Date?}   params.now
+     */
+    function get_budget_per_ms(params = {}) {
+      const { current_balance, max_budget, last_day, now = new Date()} = params
+
+      if (!current_balance) return Error('current_balance is required')
+      if (typeof current_balance !== 'number') return Error('current_balance must be an number')
+      if (!max_budget) return Error('max_budget is required')
+      if (typeof max_budget !== 'number') return Error('max_budget must be an number')
+      if (!max_budget) return Error('max_budget is required')
+      if (typeof max_budget !== 'number') return Error('max_budget must be an number')
+
+      const time_diff_ms = last_day.valueOf() - now.valueOf()
+      const amount_diff = max_budget - current_balance
+
+      if (time_diff_ms === 0) return amount_diff
+
+      return amount_diff / time_diff_ms
+    }
+
+    /**
+     * Saves the `value` into the local storage
+     * 
+     * @param {string} key
+     * @param {string} value
+     */
+    function save(key, value) {
+      const key_validation_result = validate_storage_key(key)
+      if (key_validation_result instanceof Error) return key_validation_result
+
+      const value_validation_result = validate_storage_value(value)
+      if (value_validation_result instanceof Error) return value_validation_result
+
+      window.localStorage.setItem(key, value)
+      return key
+    }
+
+    /**
+     * Reads a stored value in the local storage
+     * 
+     * @param {string} key
+     */
+    function read(key) {
+      const key_validation_result = validate_storage_key(key)
+      if (key_validation_result instanceof Error) return key_validation_result
+
+      const value = window.localStorage.getItem(key)
+
+      return value
+    }
+
+    /**
+     * Returns if value is null or undefined
+     * 
+     * @param {any} value
+     */
+    function is_nil(value) {
+      return value === null || value === undefined
+    }
+
+    /**
+     * Checks if the key to be used in local storage is valid
+     * 
+     * @param {string} key
+     */
+    function validate_storage_key(key) {
+      if (is_nil(key)) return new Error('key is required')
+      if (typeof key !== 'string') return new Error('key must be a string')
+      if (key.length === 0) return new Error('key must be a non-empty string')
+
+      return key
+    }
+
+    /**
+     * Checks if the value to be used in local storage is valid
+     * 
+     * @param {string} value
+     */
+     function validate_storage_value(value) {
+      if (is_nil(value)) return new Error('key is required')
+      if (typeof value !== 'string') return new Error('key must be a string')
+      if (value.length === 0) return new Error('key must be a non-empty string')
+
+      return value
+    }
+
+    function to_fixed(value, decimals = 2) {
+      return Math.round(value * 10**decimals) / 10**decimals
+    }
+  </script>
+</body>
+</html>
